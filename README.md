@@ -15,8 +15,8 @@ gcc hello.c -o hello
 Start the program
 ```sh
 ./hello
-Spoof (string)
 ```
+Spoof (string)
 ```sh
 ./neomorph.py -p 1337 -m spoof -e "0x7ffff7270eb0" -x "hack the planet"
 ```
