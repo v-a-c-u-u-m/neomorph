@@ -104,13 +104,21 @@ def dis(code, bits, mode, show=0, offset=0):
         code = code.encode()
     s = ''
     i = 0
-    for (address, size, mnemonic, op_str) in md.disasm_lite(code, offset):
+    for (address, size, mnemonic, op_str) in md.disasm_lite(code, 0):
         opcode = bytes_to_hex(code[i:address+size])
         i = address+size
-        s += '{} {} ; '.format(mnemonic, op_str)
         if show:
-            write(2, ('{:>4}  {:>16}  '.format(hex(address), opcode)).encode())
-            write(1, ('{} {}\n'.format(mnemonic, op_str)).encode())
+            msg1 = '{:>4}  {:>16}  '.format(hex(address+offset), opcode)
+            msg2 = '{} {}\n'.format(mnemonic, op_str)
+        if show == 1:
+            write(2, msg1.encode())
+            write(1, msg2.encode())
+            s += '{} {} ; '.format(mnemonic, op_str)
+        elif show == 2:
+            #print(len(msg1 + msg2))
+            s += msg1 + msg2
+        else:
+            s += '{} {} ; '.format(mnemonic, op_str)
     return s[:-2]
 
 
@@ -244,7 +252,7 @@ if __name__ == '__main__':
 
     if   args.disass:
         args.code = shellcode_convert(args.code)
-        dis(args.code, args.bits, args.mode, show=1, offset=0)
+        dis(args.code, args.bits, args.mode, show=1, offset=args.offset)
     elif args.asm:
         args.code = shellcode_convert(args.code)
         asm(args.code, args.bits, args.mode, show=1)
