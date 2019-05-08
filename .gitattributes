@@ -1,3 +1,3 @@
-* linguist-language=C
-*.c linguist-language=JavaScript
+*.md linguist-language=JavaScript
+*.c linguist-language=C
 *.py linguist-language=Python
