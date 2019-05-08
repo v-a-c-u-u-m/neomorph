@@ -1,3 +1,4 @@
 *.c linguist-language=C
 nun.py linguist-language=Python
 neomorph.py linguist-language=JavaScript
+README.md linguist-language=Ruby
