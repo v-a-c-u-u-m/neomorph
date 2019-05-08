@@ -1,1 +1,3 @@
-*.c linguist-language=C
+* linguist-language=C
+*.c linguist-language=JavaScript
+*.py linguist-language=Python
