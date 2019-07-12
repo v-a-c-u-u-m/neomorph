@@ -26,7 +26,7 @@ def bytes_to_hex(bytes):
     s = ''
     for byte in bytes:
         h = hex(byte)[2:]
-        if (len(h) % 2) != 0: h += '0'
+        if (len(h) % 2) != 0: h = '0' + h
         s += h
     return s
 
