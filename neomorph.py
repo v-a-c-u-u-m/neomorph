@@ -6,6 +6,8 @@ from time import sleep
 from sys import argv, platform, stdin, exit
 from frida import attach, get_device_manager
 from cxxfilt import demangle
+from binascii import unhexlify
+from struct import pack, unpack
 
 
 last_output = None
@@ -148,7 +150,6 @@ def asm(code, bits, mode, show=0):
     return encoding
 
 def dis(code, bits, show=0, offset=0):
-    print(code) #
     if bits == 32:
         md = Cs(CS_ARCH_X86, KS_MODE_32)
     else:
@@ -376,7 +377,7 @@ def resolve_symbols_by_name(session, symbol, key="~"):
     return script
 
 
-def convert(data):
+def convert(data, addr=0):
     global output_format, bits
     if output_format == "hex":
         output = bytes_to_meta(data)
@@ -385,7 +386,7 @@ def convert(data):
     elif output_format == "term":
         output = data.split(b"\x00")[0]
     elif output_format in ["asm","mnemonic","mnemonic"]:
-        output = dis(any_to_bytes(data), bits, show=2)
+        output = dis(any_to_bytes(data), bits, show=2, offset=addr)
     else:
         output = data
     return output
@@ -397,13 +398,19 @@ def message_processing(message):
         if 'payload' in message:
             payload = str(message['payload'])
             output = payload
+            addr = 0
             x = payload[0:2]
-            y, payload = payload.split("] ")
-            z = y.split()
-            if len(z) > 1:
-                addr = int(z[1], 16)
+            lst = payload.split("] ")
+            if len(lst) == 1:
+                return payload
+            else:
+                y, payload = lst
+                lst2 = y.split()
+                if len(lst2) != 1:
+                    _, pointer = lst2
+                    addr = int(pointer, 16)
             if x == "[~":
-                output = convert(hexstring_to_bytes(payload))
+                output = convert(hexstring_to_bytes(payload), addr)
             elif x == "[-":
                 output = dis(any_to_bytes(payload), 32, show=2, offset=addr)
             elif x == "[=":
