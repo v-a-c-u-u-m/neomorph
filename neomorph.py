@@ -366,7 +366,6 @@ def resolve_symbols_by_name(session, symbol, key="~"):
     var key = "%s";
     send("[*] Symbol '" + symbol + "' searching...");
     var symbols = DebugSymbol.findFunctionsNamed(symbol);
-    var symbol = symbols[0];
     for (i = 0; i < symbols.length; i++) {
         send(symbols[i]);
     }
@@ -611,6 +610,12 @@ if __name__ == "__main__":
     parser.add_argument("-O", '--output', dest='output', type=str, default='hex', help="output format")
 
     args = parser.parse_args()
+
+    try:
+        from capstone import *
+        from keystone import *
+    except:
+        print("[!] Can't import libs")
 
     if not (args.pid):
         parser.print_help()
