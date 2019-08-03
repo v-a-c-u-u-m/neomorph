@@ -29,7 +29,7 @@ Spoof (hex)
 ## Usage
 Pattern search
 ```sh
-./neomorph.py -p 1337 -m pattern -e "hello world"
+./neomorph.py -p 1337 -m pattern -e "hello world" 
 ```
 
 Dump on remote host
@@ -45,4 +45,15 @@ Pattern dump
 Pattern dump (hex)
 ```sh
 ./neomorph.py -p 1337 -m pdump -e "68 65 6c 6c 6f 20 77 6f  72 6c 64 21 21 21 21 00"
+```
+
+Searching functions and disasm
+```sh
+./neomorph.py -p 1337 -m resolve -e freestyle
+./neomorph.py -p 1337 -m dump -e 0x55fe33c87740 -O asm -b 64
+```
+
+Dumping functions
+```sh
+./neomorph.py -p 1337 -m dump_symbol -e freestyle -O asm -b 64
 ```
