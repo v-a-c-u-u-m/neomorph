@@ -368,6 +368,36 @@ def resolve_symbols_by_name(session, symbol, key="~"):
     """ % (symbol, key) )
     return script
 
+def dump_symbols(session, symbol, size, key="~"):
+    script = session.create_script("""
+    var symbol = "%s";
+    var size = %s;
+    var key = "%s";
+    send("[*] Symbol '" + symbol + "' searching...");
+    var symbols = DebugSymbol.findFunctionsNamed(symbol);
+
+    function readMemory(addr, size) {
+        send("[*] Reading from address: " + addr);
+        var dump = Memory.readByteArray(addr, size);
+        var array = new Uint8Array(dump);
+        var output = "";
+        for (var i = 0; i < size; i++) {
+            byte = (array[i].toString(16));
+            if (byte.length == 1) {
+                byte = "0" + byte;
+            }
+            output += byte + " ";
+        }
+        send("[" + key + " " + addr.toString() + "] " + output);
+    }
+
+    for (i = 0; i < symbols.length; i++) {
+        readMemory(symbols[i], size);
+    }
+    send("[*] Done");
+    """ % (str(symbol), str(size), key) )
+    return script
+
 
 def convert(data, addr=0):
     global output_format, bits
@@ -461,6 +491,13 @@ def main(args):
             parser.print_help()
             exit()
         script = dump(session, args.payload, str(args.size))
+        script.on('message', on_message)
+        script.load()
+    elif args.mode in ["dump_symbol", "dump_symbols"]:
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        script = dump_symbols(session, args.payload, str(args.size))
         script.on('message', on_message)
         script.load()
     elif args.mode in ["memory_seek", "mseek", "memseek"]:
@@ -573,6 +610,13 @@ def main(args):
         script = spoof(session, addr, data, key)
         script.on('message', on_message)
         script.load()
+    elif args.mode == "resolve":
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        script = resolve_symbols_by_name(session, args.payload)
+        script.on('message', on_message)
+        script.load()
     try:
         stdin.read()
     except KeyboardInterrupt:
@@ -581,7 +625,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '0.9'
+    version = '1.0'
 
     colors = ['','']
     if platform[0:3] == 'lin':
