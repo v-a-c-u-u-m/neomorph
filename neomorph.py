@@ -10,6 +10,7 @@ from cxxfilt import demangle
 
 last_output = None
 output_format = "hex"
+bits = 32
 
 
 def hexstring_to_bytes(hexstring):
@@ -60,7 +61,7 @@ def any_to_shellcode(a):
     return s
 
 def any_to_bytes(a):
-    return bytearray(hexstring_to_bytes(any_to_hexstring(a)))
+    return hexstring_to_bytes(any_to_hexstring(a))
 
 def bytes_to_triple(bytes):
     line_hex = ""
@@ -146,7 +147,8 @@ def asm(code, bits, mode, show=0):
         print('opcodes: {}\n{}'.format(count, encoding))
     return encoding
 
-def dis(code, bits, mode, show=0, offset=0):
+def dis(code, bits, show=0, offset=0):
+    print(code) #
     if bits == 32:
         md = Cs(CS_ARCH_X86, KS_MODE_32)
     else:
@@ -375,13 +377,15 @@ def resolve_symbols_by_name(session, symbol, key="~"):
 
 
 def convert(data):
-    global output_format
+    global output_format, bits
     if output_format == "hex":
         output = bytes_to_meta(data)
     elif output_format == "ascii":
         output = bytes_to_ascii(data)
     elif output_format == "term":
         output = data.split(b"\x00")[0]
+    elif output_format in ["asm","mnemonic","mnemonic"]:
+        output = dis(any_to_bytes(data), bits, show=2)
     else:
         output = data
     return output
@@ -401,10 +405,9 @@ def message_processing(message):
             if x == "[~":
                 output = convert(hexstring_to_bytes(payload))
             elif x == "[-":
-                output = dis(any_to_bytes(payload), 32, "opcode", show=2, offset=addr)
+                output = dis(any_to_bytes(payload), 32, show=2, offset=addr)
             elif x == "[=":
-                output = dis(any_to_bytes(payload), 64, "opcode", show=2, offset=addr)
-                output = output
+                output = dis(any_to_bytes(payload), 64, show=2, offset=addr)
         else:
             output = message
     else:
@@ -434,8 +437,9 @@ def on_message_with_mangle(message, data):
 
 
 def main(args):
-    global output_format
+    global output_format, bits
     output_format = args.output
+    bits = args.bits
     if args.host:
         host, port = args.host.split(":")
         session = attach_remote(args.pid, host, int(port))
@@ -540,7 +544,7 @@ def main(args):
         script = spoof(session, addr, data)
         script.on('message', on_message)
         script.load()
-    elif args.mode == "sdis":
+    elif args.mode == "spoof_asm":
         if not (args.payload and args.extra):
             parser.print_help()
             exit()
@@ -589,7 +593,7 @@ if __name__ == "__main__":
 ./neomorph.py -p 1337 -m dump -H 192.168.2.8:9443 -e "0x7f1ea3dbb683"
 ./neomorph.py -p 31337 -m pdis -e "push rax; ret" --bits 64 --size 32
 ./neomorph.py -p 31337 -m mdis -e "0x7f6be1a2b0dd" -b 64 -s 32
-./neomorph.py -p 31337 -m sdis -e "0x7ffccab261d0" -x "push rax; ret;" --bits 64 --nodis
+./neomorph.py -p 31337 -m spoof_asm -e "0x7ffccab261d0" -x "push rax; ret;" --bits 64 --nodis
 '''
 
     parser = ArgumentParser(description=banner,
@@ -619,5 +623,7 @@ if __name__ == "__main__":
 
     if not (args.pid):
         parser.print_help()
+    elif not (args.size > 0):
+        print("[!] Size must be greater than zero")
     else:
         main(args)
