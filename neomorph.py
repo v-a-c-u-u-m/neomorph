@@ -36,14 +36,6 @@ def bytes_to_hex(bytes):
         s += h
     return s
 
-def bytes_to_hex(bytes):
-    s = ''
-    for byte in bytes:
-        h = hex(byte)[2:]
-        if (len(h) % 2) != 0: h = '0' + h
-        s += h
-    return s
-
 def any_to_hexstring(a, chars="?"):
     if type(a) == type(b''):
         return " ".join(list(map(lambda x: x[2:] if (len(x) == 4) else '0'+x[2:], (map(hex, a)))))
@@ -379,8 +371,10 @@ def resolve_symbols_by_name(session, symbol, key="~"):
 
 def convert(data, addr=0):
     global output_format, bits
-    if output_format == "hex":
+    if output_format == "hexdump":
         output = bytes_to_meta(data)
+    elif output_format == "hex":
+        output = bytes_to_hex(data)
     elif output_format == "ascii":
         output = bytes_to_ascii(data)
     elif output_format == "term":
@@ -618,7 +612,7 @@ if __name__ == "__main__":
     parser.add_argument("-b",'--bits', dest='bits', type=int, default=32, help="bits")
     parser.add_argument("-n",'--nodis', dest='nodis', action='store_true', help="nodis flag")
     parser.add_argument("-d", '--delay', dest='delay', type=int, default=0.1, help="delay [0.1]")
-    parser.add_argument("-O", '--output', dest='output', type=str, default='hex', help="output format")
+    parser.add_argument("-O", '--output', dest='output', type=str, default='hexdump', help="output format")
 
     args = parser.parse_args()
 
