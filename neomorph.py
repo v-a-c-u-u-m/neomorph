@@ -11,7 +11,7 @@ from struct import pack, unpack
 
 
 last_output = None
-output_format = "hex"
+output_format = "hexdump"
 bits = 32
 
 
@@ -114,6 +114,14 @@ def ascii_check(data):
         else:
             return None
     return ascii
+
+def symbol_check(a):
+    hex_chars = 'x0123456789abcdef '
+    hex_bool = not (set(a) - set(hex_chars))
+    if hex_bool:
+        return False
+    else:
+        return True
 
 def p32(i):
     return pack('I', i)
@@ -398,6 +406,79 @@ def dump_symbols(session, symbol, size, key="~"):
     """ % (str(symbol), str(size), key) )
     return script
 
+def intercept(session, addr, is_symbol, size, argsize=8, key="~"):
+    script = session.create_script("""
+
+    var value = "%s";
+    var is_symbol = %s;
+    var size = %s;
+    var argsize = %s;
+    var key = "%s";
+    if (is_symbol) {
+        var symbol = value;
+        send("[*] Symbol '" + symbol + "' resolving...");
+        var symbols = DebugSymbol.findFunctionsNamed(symbol);
+        for (i = 0; i < symbols.length; i++) {
+            send(symbols[i]);
+        }
+        var addr = ptr(symbols[0]);
+    } else {
+        var addr = ptr(value);
+    }
+
+    var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
+
+    if (addr) {
+        send("[*] Intercepting at " + addr);
+
+        function readMemory(addr, size) {
+            var dump = Memory.readByteArray(addr, size);
+            var array = new Uint8Array(dump);
+            var output = "";
+            for (var i = 0; i < size; i++) {
+                byte = (array[i].toString(16));
+                if (byte.length == 1) {
+                    byte = "0" + byte;
+                }
+                output += byte + " ";
+            }
+            send("[" + key + " " + addr.toString() + "] " + output);
+        }
+
+        function checkMemory(addr, ranges) {
+            for (j = 0; j < ranges.length; j++) {
+                if (ptr(addr) >= ptr(ranges[j].base)) {
+                    if (ptr(addr) <= ptr(ranges[j].base).add(ptr(ranges[j].size))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        Interceptor.attach(addr, {
+            onEnter: function(args) {
+                send("[+] Hit at " + addr);
+                for (i = 0; i < argsize; i++) {
+                    send("arg[" + i.toString() + "]: " + args[i]);
+                    if (checkMemory(args[i], ranges)) {
+                        readMemory(args[i], size);
+                    }
+                }
+            }, 
+            onError: function(reason) {
+                send('[!] Error');
+            }, 
+            onComplete: function() {
+                send("[*] Done");
+            }
+        });
+    } else {
+        send("[-] Symbol not found");
+    }
+    """ % (addr, is_symbol, size, argsize, key) )
+    return script
+
 
 def convert(data, addr=0):
     global output_format, bits
@@ -435,10 +516,6 @@ def message_processing(message):
                     addr = int(pointer, 16)
             if x == "[~":
                 output = convert(hexstring_to_bytes(payload), addr)
-            elif x == "[-":
-                output = dis(any_to_bytes(payload), 32, show=2, offset=addr)
-            elif x == "[=":
-                output = dis(any_to_bytes(payload), 64, show=2, offset=addr)
         else:
             output = message
     else:
@@ -597,7 +674,7 @@ def main(args):
         data = any_to_bytes(args.extra)
         if ascii_check(data):
             try:
-                data = any_to_bytes(asm(data, args.bits, "opcode"))
+                data = asm(data, args.bits, "bytes")
             except:
                 data = None
             if not data:
@@ -617,6 +694,19 @@ def main(args):
         script = resolve_symbols_by_name(session, args.payload)
         script.on('message', on_message)
         script.load()
+    elif args.mode == "intercept":
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        if symbol_check(args.payload):
+            is_symbol = "true"
+        else:
+            is_symbol = "false"
+        script = intercept(session, args.payload, is_symbol, args.size)
+        script.on('message', on_message)
+        script.load()
+    else:
+        print("[-] Mode '{}' not found".format(args.mode))
     try:
         stdin.read()
     except KeyboardInterrupt:
@@ -625,7 +715,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '1.0'
+    version = '1.1'
 
     colors = ['','']
     if platform[0:3] == 'lin':
@@ -653,7 +743,7 @@ if __name__ == "__main__":
     parser.add_argument("-s",'--size', dest='size', type=int, default=64, help="size [64]")
     parser.add_argument("-S",'--shift', dest='shift', type=int, default=0, help="shift [0]")
     parser.add_argument("-",'--stdin', dest='stdin', action='store_true', help="stdin flag")
-    parser.add_argument("-b",'--bits', dest='bits', type=int, default=32, help="bits")
+    parser.add_argument("-b",'--bits', dest='bits', type=int, default=64, help="bits")
     parser.add_argument("-n",'--nodis', dest='nodis', action='store_true', help="nodis flag")
     parser.add_argument("-d", '--delay', dest='delay', type=int, default=0.1, help="delay [0.1]")
     parser.add_argument("-O", '--output', dest='output', type=str, default='hexdump', help="output format")
