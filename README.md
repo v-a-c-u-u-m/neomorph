@@ -7,6 +7,20 @@ pip3 install frida-tools cxxfilt
 
 
 
+## Interception
+Function interception
+```sh
+./neomorph.py -p 31337 -m intercept -e 0x13371337
+````
+
+SSL interception
+```sh
+./neomorph.py -p 31337 -m intercept -e SSL_write
+./neomorph.py -p 31337 -m intercept -e SSL_read
+```
+
+
+
 ## Spoofing example
 Compile the program
 ```sh
