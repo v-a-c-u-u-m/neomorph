@@ -5,7 +5,7 @@ from argparse import ArgumentParser, RawTextHelpFormatter
 from time import sleep
 from sys import argv, platform, stdin, exit
 from frida import attach, get_device_manager
-#from cxxfilt import demangle
+from cxxfilt import demangle
 from binascii import unhexlify
 from struct import pack, unpack
 
