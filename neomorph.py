@@ -196,7 +196,7 @@ def dump(session, addr, is_symbol, size):
         var symbol = value;
         send("[*] Symbol '" + symbol + "' resolving...");
         var symbols = DebugSymbol.findFunctionsNamed(symbol);
-        for (i = 0; i < symbols.length; i++) {
+        for (var i = 0; i < symbols.length; i++) {
             send(symbols[i]);
         }
         if (symbols.length == 0) {
@@ -276,7 +276,7 @@ def export(session, libname, filter=""):
     send("[*] " + libname + " syncing...");
     var exports = Module.enumerateExportsSync(libname);
     var payload;
-    for (i = 0; i < exports.length; i++) {
+    for (var i = 0; i < exports.length; i++) {
          payload = {
             "subtype": "export",
             "filter": filter,
@@ -289,12 +289,13 @@ def export(session, libname, filter=""):
     """ % {"libname": libname, "filter": filter} )
     return script
 
-def pattern_search(session, hexstring):
+def pattern_search(session, hexstring, protection="r--"):
     script = session.create_script("""
-        var pattern = "%s";
+        var pattern = "%(pattern)s";
+        var prot = "%(protection)s";
         send("[*] Searching... " + pattern);
         var bits = 64;
-        var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
+        var ranges = Process.enumerateRangesSync({protection: prot, coalesce: true});
         var range;
 
         function processNext(){
@@ -305,7 +306,7 @@ def pattern_search(session, hexstring):
             }
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: function(address, size) {
-                    send('[+] Pattern found at: ' + address.toString());
+                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString());
                 }, 
                 onError: function(reason) {
                     send('[!] There was an error scanning memory (' + range.base + ', ' + range.size + ')');
@@ -316,17 +317,18 @@ def pattern_search(session, hexstring):
             });
         }
         processNext();
-""" % (str(hexstring)) )
+""" % {"pattern": str(hexstring), "protection": protection} )
     return script
 
-def pattern_dump(session, hexstring, size, shift):
+def pattern_dump(session, hexstring, size, shift, protection="r--"):
     script = session.create_script("""
         var pattern = "%s";
         var readsize = %s;
         var shift = %s;
+        var prot = "%s";
         send("[*] Searching... " + pattern);
         var bits = 64;
-        var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
+        var ranges = Process.enumerateRangesSync({protection: prot, coalesce: true});
         var range;
 
         function readMemory(addr, size) {
@@ -341,12 +343,12 @@ def pattern_dump(session, hexstring, size, shift):
                 }
                 output += byte + " ";
             }
-        var payload = {
-            "subtype": "hexstream",
-            "addr": addr.toString(),
-            "output": output
-        };
-        send(payload);
+            var payload = {
+                "subtype": "hexstream",
+                "addr": addr.toString(),
+                "output": output
+            };
+            send(payload);
         }
 
         function processNext(){
@@ -357,7 +359,7 @@ def pattern_dump(session, hexstring, size, shift):
             }
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: function(address, size) {
-                    send('[+] Pattern found at: ' + address.toString());
+                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString());
                     readMemory(address.add(shift), readsize);
                 }, 
                 onError: function(reason) {
@@ -369,7 +371,7 @@ def pattern_dump(session, hexstring, size, shift):
             });
         }
         processNext();
-""" % (str(hexstring), size, shift) )
+""" % (str(hexstring), size, shift, protection) )
     return script
 
 def call(session, addr):
@@ -395,7 +397,7 @@ def spoof(session, addr, is_symbol, data, length):
         var symbol = value;
         send("[*] Symbol '" + symbol + "' resolving...");
         var symbols = DebugSymbol.findFunctionsNamed(symbol);
-        for (i = 0; i < symbols.length; i++) {
+        for (var i = 0; i < symbols.length; i++) {
             send(symbols[i]);
         }
         if (symbols.length == 0) {
@@ -461,8 +463,8 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     else:
         trace_flag = "true"
     if not data:
-        data = "[]"
-    if not target_i:
+        data = "false"
+    if target_i == None:
         target_i = "false"
 
     script = session.create_script("""
@@ -490,7 +492,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
         var addr = ptr(value);
     }
 
-    if (bytes.length > 0) {
+    if (bytes) {
         bytes.push(0);
         var pointer = new Memory.alloc(bytes.length)
         send("[^] Allocate " + bytes.length + " bytes at " + pointer);
@@ -546,14 +548,27 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     }
 
     function checkMemory(addr, ranges) {
-        for (j = 0; j < ranges.length; j++) {
-            if (ptr(addr) >= ptr(ranges[j].base)) {
-                if (ptr(addr) <= ptr(ranges[j].base).add(ptr(ranges[j].size))) {
-                    return true;
-                }
+        for (var j = 0; j < ranges.length; j++) {
+            var min = ranges[j].base
+            var x   = addr;
+            var max = ranges[j].base.add(ranges[j].size);
+            if (min <= x <= max) {
+                return true;
             }
         }
         return false;
+    }
+
+    function argRead(args, i) {
+        var reg = regById(i);
+        send("arg[" + i.toString() + "]" + " (" + reg + "): " + args[i]);
+        var readable = checkMemory(args[i], ranges);
+        if (readable) {
+            readMemory(args[i], size);
+        }
+        if ((argsize - 1) == i) {
+            /*send(""); send("");*/
+        }
     }
 
     function main() {
@@ -561,7 +576,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
 
         Interceptor.attach(addr, {
             onEnter: function(args) {
-                if (bytes.length > 0) {
+                if (bytes) {
                     args[target_i] = pointer;
                 }
 
@@ -584,24 +599,19 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
                 if (trace_flag) {
                     send("|    backtrace:");
                     var backtrace = Thread.backtrace(this.context, Backtracer.ACCURATE);
-                    for (i = 0; i < backtrace.length; i++) {
+                    for (var i = 0; i < backtrace.length; i++) {
                         var d = DebugSymbol.fromAddress(backtrace[i]);
                         var s = d.address + " (" + d.moduleName + "!" + d.name + ")";
                         send("|        " + s);
                     }
                 }
 
-                var reg;
-                for (i = 0; i < argsize; i++) {
-                    reg = regById(i);
-                    send("arg[" + i.toString() + "]" + " (" + reg + "): " + args[i]);
-                    readable = checkMemory(args[i], ranges);
-                    if (readable) {
-                        readMemory(args[i], size);
+                if (target_i != false) {
+                    argRead(args, target_i);
+                } else {
+                    for (var i = 0; i < argsize; i++) {
+                        argRead(args, i);
                     }
-                    if ((argsize - 1) == i) {
-                        /*send(""); send("");*/
-                    } 
                 }
             }, 
             onLeave: function(retval) {
@@ -661,7 +671,7 @@ def message_processing(message):
                     output = convert(hexstring_to_bytes(payload["output"]), addr)
                 elif subtype == "export":
                     filter = payload["filter"].lower()
-                    if filter == "" or filter in payload["output"].lower():
+                    if filter == "" or filter in payload["name"].lower():
                         output = "{}  {}".format(payload["address"], payload["name"])
                     else:
                         output = None
@@ -732,7 +742,7 @@ def main(args):
             exit()
         if args.input_format == "pattern":
             pattern = any_to_hexstring(args.payload)
-            script = pattern_dump(session, pattern, args.size, args.shift)
+            script = pattern_dump(session, pattern, args.size, args.shift, args.protection)
         elif args.input_format in ["asm", "mnemo", "mnemonic"]:
             pattern = any_to_bytes(args.payload)
             if ascii_check(pattern):
@@ -743,7 +753,7 @@ def main(args):
                     pattern = any_to_hexstring(args.payload)
             else:
                 pattern = args.payload
-            script = pattern_dump(session, pattern, args.size, args.shift)
+            script = pattern_dump(session, pattern, args.size, args.shift, args.protection)
         else:
             script = dump(session, args.payload, is_symbol, str(args.size))
         script.on('message', on_message)
@@ -806,19 +816,6 @@ def main(args):
         script.on('message', on_message)
         script.load()
 
-    elif args.mode in ["intercept_spoof", "spoof_arg", "spoof_args"]:
-        if not args.payload:
-            parser.print_help()
-            exit()
-        addr = args.payload
-        if not args.extra:
-            data = []
-        else:
-            data = list(any_to_bytes(args.extra))
-        script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, data, args.target_i)
-        script.on('message', on_message)
-        script.load()
-
     elif args.mode == "resolve":
         if not (args.payload):
             parser.print_help()
@@ -831,7 +828,9 @@ def main(args):
         if not (args.payload):
             parser.print_help()
             exit()
-        script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace)
+        if args.extra:
+            args.extra = list(any_to_bytes(args.extra))
+        script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i)
         script.on('message', on_message)
         script.load()
 
@@ -845,7 +844,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '2.0'
+    version = '2.1'
 
     colors = ['','']
     if platform[0:3] == 'lin':
@@ -893,6 +892,7 @@ if __name__ == "__main__":
     parser.add_argument("-O", '--output', dest='output_format', type=str, default='hexdump', help="output format")
     parser.add_argument("-T",'--trace', dest='trace', action='store_true', help="trace flag")
     parser.add_argument("-j",'--javascript', dest='javascript', type=str, default=None, help="js file")
+    parser.add_argument("-t",'--protection', dest='protection', type=str, default=None, help="protection flags")
 
     args = parser.parse_args()
 
@@ -902,7 +902,7 @@ if __name__ == "__main__":
     except:
         print("[!] Can't import libs")
 
-    if not (args.pid):
+    if not (args.pid) and not (args.package):
         parser.print_help()
     elif not (args.size > 0):
         print("[!] Size must be greater than zero")
