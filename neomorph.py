@@ -12,6 +12,7 @@ from struct import pack, unpack
 last_output = None
 output_format = "hexdump"
 bits = 32
+nolines = False
 
 
 def hexstring_to_bytes(hexstring):
@@ -56,11 +57,11 @@ def any_to_shellcode(a):
 def any_to_bytes(a):
     return hexstring_to_bytes(any_to_hexstring(a))
 
-def bytes_to_triple(bytes):
+def bytes_to_triple(bytes, offset=0):
     line_hex = ""
     line_ascii = ""
     j = 0
-    k = 0
+    k = offset
     s1 = []
     s2 = []
     s3 = []
@@ -89,8 +90,8 @@ def bytes_to_triple(bytes):
             line_hex += " "
     return s1, s2, s3
 
-def bytes_to_meta(bytes):
-    s1, s2, s3 = bytes_to_triple(bytes)
+def bytes_to_meta(bytes, offset=0):
+    s1, s2, s3 = bytes_to_triple(bytes, offset)
     lines = []
     for i in range(len(s1)):
         lines.append("{}  {}  |{}|".format(s1[i], s2[i], s3[i]))
@@ -186,11 +187,12 @@ def attach_usb(package):
     return session
 
 
-def dump(session, addr, is_symbol, size):
+def dump(session, addr, is_symbol, size, shift):
     script = session.create_script("""
     var value = "%s";
     var is_symbol = %s;
     var size = %s;
+    var shift = %s;
 
     if (is_symbol) {
         var symbol = value;
@@ -209,7 +211,9 @@ def dump(session, addr, is_symbol, size):
     }
 
     function readMemory(addr, size) {
-        send("[*] Reading from address: " + addr);
+        var moduleInfo = DebugSymbol.fromAddress(addr);
+        var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+        send("[*] Reading from address: " + addr + " (" + info + ")");
         var dump = Memory.readByteArray(addr, size);
         var array = new Uint8Array(dump);
         var output = "";
@@ -229,7 +233,7 @@ def dump(session, addr, is_symbol, size):
     }
 
     function main() {
-        readMemory(addr, size);
+        readMemory(addr.add(shift), size);
         send("[*] Done");
     }
 
@@ -238,7 +242,7 @@ def dump(session, addr, is_symbol, size):
     } else {
         send("[-] Symbol not found");
     }
-    """ % (str(addr), str(is_symbol), str(size)) )
+    """ % (str(addr), str(is_symbol), str(size), str(shift)) )
     return script
 
 def memory_seek(session, addr, size):
@@ -269,7 +273,7 @@ def memory_seek(session, addr, size):
     return script
 
 
-def export(session, libname, filter=""):
+def exports(session, libname, filter=""):
     script = session.create_script("""
     var libname = "%(libname)s";
     var filter = "%(filter)s";
@@ -278,15 +282,66 @@ def export(session, libname, filter=""):
     var payload;
     for (var i = 0; i < exports.length; i++) {
          payload = {
-            "subtype": "export",
+            "subtype": "exports",
             "filter": filter,
+            "name": exports[i].name,
             "address": exports[i].address,
-            "name": exports[i].name
+            "type": exports[i].type
         };
         send(payload);
     }
     send("[*] Done");
     """ % {"libname": libname, "filter": filter} )
+    return script
+
+def imports(session, libname, filter=""):
+    script = session.create_script("""
+    var libname = "%(libname)s";
+    var filter = "%(filter)s";
+    send("[*] " + libname + " syncing...");
+    var imports = Module.enumerateImportsSync(libname);
+    var payload;
+    for (var i = 0; i < imports.length; i++) {
+         var moduleInfo = DebugSymbol.fromAddress(imports[i].address);
+         var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+         payload = {
+            "subtype": "imports",
+            "filter": filter,
+            "name": imports[i].name,
+            "address": imports[i].address,
+            "type": imports[i].type,
+            "info": info
+        };
+        send(payload);
+    }
+    send("[*] Done");
+    """ % {"libname": libname, "filter": filter} )
+    return script
+
+def modules(session, filter=""):
+    script = session.create_script("""
+    var filter = "%(filter)s";
+    send("[*] Searching modules...");
+    Process.enumerateModules( {
+        onMatch: function(module) {
+            var payload = {
+                "subtype": "modules",
+                "filter": filter,
+                "name": module.name,
+                "base": module.base,
+                "size": module.size,
+                "path": module.path
+            };
+            send(payload);
+        }, 
+        onError: function() {
+            send('[!] There was an error enumerating modules');
+        }, 
+        onComplete: function() {
+            send("[*] Done");
+        }
+    });
+    """ % {"filter": filter} )
     return script
 
 def pattern_search(session, hexstring, protection="r--"):
@@ -306,7 +361,9 @@ def pattern_search(session, hexstring, protection="r--"):
             }
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: function(address, size) {
-                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString());
+                    var moduleInfo = DebugSymbol.fromAddress(address);
+                    var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString() + " (" + info + ")");
                 }, 
                 onError: function(reason) {
                     send('[!] There was an error scanning memory (' + range.base + ', ' + range.size + ')');
@@ -359,7 +416,9 @@ def pattern_dump(session, hexstring, size, shift, protection="r--"):
             }
             Memory.scan(range.base, range.size, pattern, {
                 onMatch: function(address, size) {
-                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString());
+                    var moduleInfo = DebugSymbol.fromAddress(address);
+                    var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+                    send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString() + " (" + info + ")");
                     readMemory(address.add(shift), readsize);
                 }, 
                 onError: function(reason) {
@@ -410,7 +469,9 @@ def spoof(session, addr, is_symbol, data, length):
     }
 
     function readMemory(addr, size) {
-        send("[*] Reading from address: " + addr);
+        var moduleInfo = DebugSymbol.fromAddress(addr);
+        var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+        send("[*] Reading from address: " + addr + " (" + info + ")");
         var dump = Memory.readByteArray(addr, size);
         var array = new Uint8Array(dump);
         var output = "";
@@ -451,7 +512,9 @@ def resolve_symbols_by_name(session, symbol):
     send("[*] Symbol '" + symbol + "' searching...");
     var symbols = DebugSymbol.findFunctionsNamed(symbol);
     for (var i = 0; i < symbols.length; i++) {
-        send(symbols[i]);
+        var moduleInfo = DebugSymbol.fromAddress(symbols[i]);
+        var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+        send(symbols[i] + "  (" + info + ")");
     }
     send("[*] Done");
     """ % (symbol) )
@@ -465,7 +528,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     if not data:
         data = "false"
     if target_i == None:
-        target_i = "false"
+        target_i = "empty"
 
     script = session.create_script("""
     var value = "%s";
@@ -474,7 +537,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     var argsize = %s;
     var trace_flag = %s;
     var bytes = %s;
-    var target_i = %s;
+    var target_i = "%s";
 
     if (is_symbol) {
         var symbol = value;
@@ -529,7 +592,19 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     }
 
     function readMemory(addr, size) {
-        var dump = Memory.readByteArray(addr, size);
+        try {
+            var dump = Memory.readByteArray(addr, size);
+        } catch(err) {
+            var payload = {
+                "subtype": "error",
+                "errtype": err["type"],
+                "addr":    err["address"],
+                "context": err["context"],
+                "dct":     err,
+                "output":  "" + err
+            };
+            return payload;
+        }
         var array = new Uint8Array(dump);
         var output = "";
         for (var i = 0; i < size; i++) {
@@ -544,7 +619,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
             "addr": addr.toString(),
             "output": output
         };
-        send(payload);
+        return payload;
     }
 
     function checkMemory(addr, ranges) {
@@ -560,58 +635,89 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     }
 
     function argRead(args, i) {
-        var reg = regById(i);
-        send("arg[" + i.toString() + "]" + " (" + reg + "): " + args[i]);
-        var readable = checkMemory(args[i], ranges);
-        if (readable) {
-            readMemory(args[i], size);
+        var payload;
+        if (args[i].toInt32() != 0) {
+            payload = readMemory(args[i], size);
         }
-        if ((argsize - 1) == i) {
-            /*send(""); send("");*/
-        }
+        return payload;
     }
 
     function main() {
-        send("[*] Intercepting at " + addr);
+        if (is_symbol) {
+            var d = DebugSymbol.fromAddress(addr);
+            var s = d.moduleName + "!" + d.name;
+            send("[*] Intercepting at " + addr + " <" + value + ">" + " (" + s + ")");
+        } else {
+            send("[*] Intercepting at " + addr);
+        }
 
         Interceptor.attach(addr, {
             onEnter: function(args) {
+                var lines = [];
+                lines.push("");
+                var messages = [];
+
                 if (bytes) {
                     args[target_i] = pointer;
                 }
 
-                var d = DebugSymbol.fromAddress(addr);
-                var s = d.moduleName + "!" + d.name;
                 if (is_symbol) {
-                    send("[+] Hit at " + addr + " <" + value + ">" + " (" + s + ")");
+                    var d = DebugSymbol.fromAddress(addr);
+                    var s = d.moduleName + "!" + d.name;
+                    lines.push("[+] Hit at " + addr + " <" + value + ">" + " (" + s + ")");
                 } else {
-                    send("[+] Hit at " + addr);
+                    lines.push("[+] Hit at " + addr);
                 }
 
                 var d = DebugSymbol.fromAddress(this.returnAddress);
                 var s = d.moduleName + "!" + d.name;
 
-                send("|    context: "   + this.context);
-                send("|    ret_addr: "  + this.returnAddress + " (" + s + ")");
-                send("|    thread_id: " + this.threadId);
-                send("|    depth: "     + this.depth);
-                send("|    err: "       + this.err);
+                var dbg_bool = "" + Process.isDebuggerAttached();
+
+                /*lines.push("|    context: "   + this.context);*/
+                lines.push("|    ret_addr: "  + this.returnAddress + " (" + s + ")");
+                lines.push("|    thread_id: " + this.threadId);
+                lines.push("|    depth: "     + this.depth);
+                lines.push("|    err: "       + this.err);
+                lines.push("|    dbg: "       + dbg_bool);
+
                 if (trace_flag) {
-                    send("|    backtrace:");
+                    lines.push("|    backtrace:");
                     var backtrace = Thread.backtrace(this.context, Backtracer.ACCURATE);
                     for (var i = 0; i < backtrace.length; i++) {
                         var d = DebugSymbol.fromAddress(backtrace[i]);
                         var s = d.address + " (" + d.moduleName + "!" + d.name + ")";
-                        send("|        " + s);
+                        lines.push("|        " + s);
                     }
                 }
 
-                if (target_i != false) {
-                    argRead(args, target_i);
+                var reg;
+                if (target_i == -1) {
+                    for (var i = 0; i < argsize; i++) {
+                        reg = regById(i);
+                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+                    }
+                } else if (target_i != "empty") {
+                    reg = regById(target_i);
+                    messages.push("arg[" + target_i + "]" + " (" + reg + "): " + args[target_i]);
+                    var payload = argRead(args, target_i);
+                    if (payload) {
+                        messages.push(payload);
+                    }
                 } else {
                     for (var i = 0; i < argsize; i++) {
-                        argRead(args, i);
+                        reg = regById(i);
+                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+                        var payload = argRead(args, i);
+                        if (payload) {
+                            messages.push(payload);
+                        }
                     }
+                }
+
+                send({"subtype": "lines", "lines": lines});
+                for (var i = 0; i < messages.length; i++) {
+                    send(messages[i]);
                 }
             }, 
             onLeave: function(retval) {
@@ -636,11 +742,238 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     """ % (str(addr), str(is_symbol), str(size), str(argsize), str(trace_flag), str(data), str(target_i)) )
     return script
 
+def intercept_by_pattern(session, pattern, size, argsize, trace_flag=False, data=None, target_i=None, shift=0, protection="r--"):
+    if not trace_flag:
+        trace_flag = "false"
+    else:
+        trace_flag = "true"
+    if not data:
+        data = "false"
+    if target_i == None:
+        target_i = "empty"
+
+    args = {
+        "pattern":    str(pattern), 
+        "size":       str(size),
+        "argsize":    str(argsize),
+        "trace_flag": str(trace_flag),
+        "bytes":      str(data),
+        "target_i":   str(target_i),
+        "shift":      str(shift),
+        "protection": str(protection),
+    }
+
+    script = session.create_script("""
+    var pattern = "%(pattern)s";
+    var size = %(size)s;
+    var argsize = %(argsize)s;
+    var trace_flag = %(trace_flag)s;
+    var bytes = %(bytes)s;
+    var target_i = "%(target_i)s";
+
+    var shift = %(shift)s;
+    var prot = "%(protection)s";
+    send("[*] Searching... " + pattern);
+    var ranges = Process.enumerateRangesSync({protection: prot, coalesce: true});
+    var range;
+
+    if (bytes) {
+        bytes.push(0);
+        var pointer = new Memory.alloc(bytes.length)
+        send("[^] Allocate " + bytes.length + " bytes at " + pointer);
+        Memory.writeByteArray(pointer, bytes);
+        readMemory(pointer, size);
+    }
+
+    var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
+
+    function regById(i) {
+        var reg;
+        if (Process.arch == "ia32") {
+            reg = "ESP+" + 4*(i+1);
+        } else if (Process.arch == "x64") {
+            if (i == 0) {
+                reg = "RDI";
+            } else if (i == 1) {
+                reg = "RSI";
+            } else if (i == 2) {
+                reg = "RDX";
+            } else if (i == 3) {
+                reg = "RCX";
+            } else if (i == 4) {
+                reg = "R8";
+            } else if (i == 5) {
+                reg = "R9";
+            } else {
+                reg = "RSP+" + 8*(i-5);
+            }
+        } else {
+            reg = "";
+        }
+        return reg;
+    }
+
+    function readMemory(addr, size) {
+        try {
+            var dump = Memory.readByteArray(addr, size);
+        } catch(err) {
+            var payload = {
+                "subtype": "error",
+                "errtype": err["type"],
+                "addr":    err["address"],
+                "context": err["context"],
+                "dct":     err,
+                "output":  "" + err
+            };
+            return payload;
+        }
+        var array = new Uint8Array(dump);
+        var output = "";
+        for (var i = 0; i < size; i++) {
+            var byte = (array[i].toString(16));
+            if (byte.length == 1) {
+                byte = "0" + byte;
+            }
+            output += byte + " ";
+        }
+        var payload = {
+            "subtype": "hexstream",
+            "addr": addr.toString(),
+            "output": output
+        };
+        return payload;
+    }
+
+    function checkMemory(addr, ranges) {
+        for (var j = 0; j < ranges.length; j++) {
+            var min = ranges[j].base
+            var x   = addr;
+            var max = ranges[j].base.add(ranges[j].size);
+            if (min <= x <= max) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function argRead(args, i) {
+        var payload;
+        if (args[i].toInt32() != 0) {
+            payload = readMemory(args[i], size);
+        }
+        return payload;
+    }
+
+    function main(addr) {
+        send("[*] Intercepting at " + addr);
+
+        Interceptor.attach(addr, {
+            onEnter: function(args) {
+                var lines = [];
+                lines.push("");
+                var messages = [];
+
+                if (bytes) {
+                    args[target_i] = pointer;
+                }
+
+                lines.push("[+] Hit at " + addr);
+
+                var d = DebugSymbol.fromAddress(this.returnAddress);
+                var s = d.moduleName + "!" + d.name;
+
+                var dbg_bool = "" + Process.isDebuggerAttached();
+
+                /*lines.push("|    context: "   + this.context);*/
+                lines.push("|    ret_addr: "  + this.returnAddress + " (" + s + ")");
+                lines.push("|    thread_id: " + this.threadId);
+                lines.push("|    depth: "     + this.depth);
+                lines.push("|    err: "       + this.err);
+                lines.push("|    dbg: "       + dbg_bool);
+
+                if (trace_flag) {
+                    lines.push("|    backtrace:");
+                    var backtrace = Thread.backtrace(this.context, Backtracer.ACCURATE);
+                    for (var i = 0; i < backtrace.length; i++) {
+                        var d = DebugSymbol.fromAddress(backtrace[i]);
+                        var s = d.address + " (" + d.moduleName + "!" + d.name + ")";
+                        lines.push("|        " + s);
+                    }
+                }
+
+                var reg;
+                if (target_i == -1) {
+                    for (var i = 0; i < argsize; i++) {
+                        reg = regById(i);
+                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+                    }
+                } else if (target_i != "empty") {
+                    reg = regById(target_i);
+                    messages.push("arg[" + target_i + "]" + " (" + reg + "): " + args[target_i]);
+                    var payload = argRead(args, target_i);
+                    if (payload) {
+                        messages.push(payload);
+                    }
+                } else {
+                    for (var i = 0; i < argsize; i++) {
+                        reg = regById(i);
+                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+                        var payload = argRead(args, i);
+                        if (payload) {
+                            messages.push(payload);
+                        }
+                    }
+                }
+
+                send({"subtype": "lines", "lines": lines});
+                for (var i = 0; i < messages.length; i++) {
+                    send(messages[i]);
+                }
+            }, 
+            onLeave: function(retval) {
+                /*send("[+] Ret val " + ptr(retval));*/
+                send(""); send("");
+            },
+
+            onError: function(reason) {
+                send('[!] Error');
+            }, 
+            onComplete: function() {
+                send("[*] Done");
+            }
+        });
+    }
+
+    function processNext() {
+        range = ranges.pop();
+        if (!range) {
+            send("[*] Switching to next task");
+            return;
+        }
+        Memory.scan(range.base, range.size, pattern, {
+            onMatch: function(address, size) {
+                var moduleInfo = DebugSymbol.fromAddress(address);
+                var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+                send('[+] Pattern found with protection "' + range.protection + '" at: ' + address.toString() + " (" + info + ")");
+                main(address.add(shift));
+            }, 
+            onError: function(reason) {
+                send('[!] There was an error scanning memory (' + range.base + ', ' + range.size + ')');
+            }, 
+            onComplete: function() {
+                processNext();
+            }
+        });
+    }
+    processNext();
+    """ % (args) )
+    return script
+
 
 def convert(data, addr=0):
     global output_format, bits
     if output_format == "hexdump":
-        output = bytes_to_meta(data)
+        output = bytes_to_meta(data, addr)
     elif output_format == "hex":
         output = bytes_to_hex(data)
     elif output_format == "ascii":
@@ -656,6 +989,7 @@ def convert(data, addr=0):
     return output
 
 def message_processing(message):
+    global nolines
     if message["type"] == "error":
         output = "[!] " + str(message["stack"])
     elif message["type"] == "send":
@@ -669,12 +1003,31 @@ def message_processing(message):
                     if "addr" in payload:
                         addr = int(payload["addr"], 16)
                     output = convert(hexstring_to_bytes(payload["output"]), addr)
-                elif subtype == "export":
+                elif subtype == "exports":
                     filter = payload["filter"].lower()
                     if filter == "" or filter in payload["name"].lower():
-                        output = "{}  {}".format(payload["address"], payload["name"])
+                        output = "{:<14}  {:<44} {}".format(payload["address"], payload["name"], payload["type"])
                     else:
                         output = None
+                elif subtype == "imports":
+                    filter = payload["filter"].lower()
+                    if filter == "" or filter in payload["name"].lower():
+                        output = "{:<14}  {:<44} {:<8}  ({})".format(payload["address"], payload["name"], payload["type"], payload["info"])
+                    else:
+                        output = None
+                elif subtype == "modules":
+                    filter = payload["filter"].lower()
+                    if filter == "" or filter in payload["name"].lower():
+                        output = "{:<14}  {:<44} {}".format(payload["base"], payload["name"], payload["path"])
+                    else:
+                        output = None
+                elif subtype == "lines":
+                    if not nolines:
+                        output = "\n".join(payload["lines"])
+                    else:
+                        output = None
+                elif subtype == "error":
+                    output = payload["output"]
     else:
         output = message
     return output
@@ -700,9 +1053,10 @@ def on_detached(session, message):
 
 
 def main(args):
-    global output_format, bits
+    global output_format, bits, nolines
     output_format = args.output_format
     bits = args.bits
+    nolines = args.nolines
     if args.host:
         host, port = args.host.split(":")
         session = attach_remote(args.pid, host, int(port))
@@ -755,7 +1109,7 @@ def main(args):
                 pattern = args.payload
             script = pattern_dump(session, pattern, args.size, args.shift, args.protection)
         else:
-            script = dump(session, args.payload, is_symbol, str(args.size))
+            script = dump(session, args.payload, is_symbol, str(args.size), args.shift)
         script.on('message', on_message)
         script.load()
 
@@ -773,14 +1127,33 @@ def main(args):
             except KeyboardInterrupt:
                 break
 
-    elif args.mode == "export":
+    elif args.mode in ["exports", "export"]:
         if not (args.payload):
             parser.print_help()
             exit()
         if args.extra:
-            script = export(session, args.payload, args.extra)
+            script = exports(session, args.payload, args.extra)
         else:
-            script = export(session, args.payload)
+            script = exports(session, args.payload)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode in ["imports", "import"]:
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        if args.extra:
+            script = imports(session, args.payload, args.extra)
+        else:
+            script = imports(session, args.payload)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode == "modules":
+        if args.payload:
+            script = modules(session, args.payload)
+        else:
+            script = modules(session)
         script.on('message', on_message)
         script.load()
 
@@ -824,13 +1197,38 @@ def main(args):
         script.on('message', on_message)
         script.load()
 
-    elif args.mode == "intercept":
+    elif args.mode == "intercept_without_pattern":
         if not (args.payload):
             parser.print_help()
             exit()
         if args.extra:
             args.extra = list(any_to_bytes(args.extra))
         script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode in ["intercept"]:
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        if args.extra:
+            args.extra = list(any_to_bytes(args.extra))
+        if args.input_format == "pattern":
+            pattern = any_to_hexstring(args.payload)
+            script = intercept_by_pattern(session, pattern, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection)
+        elif args.input_format in ["asm", "mnemo", "mnemonic"]:
+            pattern = any_to_bytes(args.payload)
+            if ascii_check(pattern):
+                try:
+                    pattern = asm(pattern, args.bits, "opcode")
+                except:
+                    print("[?] Is pattern string?")
+                    pattern = any_to_hexstring(args.payload)
+            else:
+                pattern = args.payload
+            script = intercept_by_pattern(session, pattern, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection)
+        else:
+            script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i)
         script.on('message', on_message)
         script.load()
 
@@ -844,7 +1242,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '2.1'
+    version = '2.7'
 
     colors = ['','']
     if platform[0:3] == 'lin':
@@ -866,8 +1264,9 @@ if __name__ == "__main__":
 ./neomorph.py -p 1337 -m resolve -e freestyle
 ./neomorph.py -p 1337 -m dump -e 0x55fe33c87740 -O asm
 ./neomorph.py -p 1337 -m dump -e freestyle -O asm
-./neomorph.py -p 1337 -m export -e libssl.so
-./neomorph.py -p 1337 -m export -e libssl.so -x read
+./neomorph.py -p 1337 -m exports -e libssl.so
+./neomorph.py -p 1337 -m exports -e libssl.so -x read
+./neomorph.py -p 31337 -m modules
 '''
 
     parser = ArgumentParser(description=banner,
@@ -886,13 +1285,13 @@ if __name__ == "__main__":
     parser.add_argument("-S",'--shift', dest='shift', type=int, default=0, help="shift [0]")
     parser.add_argument("-",'--stdin', dest='stdin', action='store_true', help="stdin flag")
     parser.add_argument("-b",'--bits', dest='bits', type=int, default=64, help="bits")
-    parser.add_argument("-n",'--nodis', dest='nodis', action='store_true', help="nodis flag")
     parser.add_argument("-d", '--delay', dest='delay', type=int, default=0.1, help="delay [0.1]")
     parser.add_argument("-I", '--input', dest='input_format', type=str, default=None, help="input format")
     parser.add_argument("-O", '--output', dest='output_format', type=str, default='hexdump', help="output format")
     parser.add_argument("-T",'--trace', dest='trace', action='store_true', help="trace flag")
+    parser.add_argument("-N",'--nolines', dest='nolines', action='store_true', help="no additional lines")
     parser.add_argument("-j",'--javascript', dest='javascript', type=str, default=None, help="js file")
-    parser.add_argument("-t",'--protection', dest='protection', type=str, default=None, help="protection flags")
+    parser.add_argument("-t",'--protection', dest='protection', type=str, default="r--", help="protection flags")
 
     args = parser.parse_args()
 
