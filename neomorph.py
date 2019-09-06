@@ -3,6 +3,7 @@
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from time import sleep
+from os.path import join
 from sys import argv, platform, stdin, exit
 from frida import attach, get_device_manager, get_usb_device
 from binascii import unhexlify
@@ -13,6 +14,8 @@ last_output = None
 output_format = "hexdump"
 bits = 32
 nolines = False
+directory = "temp"
+i = 0
 
 
 def hexstring_to_bytes(hexstring):
@@ -520,7 +523,7 @@ def resolve_symbols_by_name(session, symbol):
     """ % (symbol) )
     return script
 
-def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=None, target_i=None):
+def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=None, target_i=None, shift=0, protection="r--", submode="std"):
     if not trace_flag:
         trace_flag = "false"
     else:
@@ -530,40 +533,31 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
     if target_i == None:
         target_i = "empty"
 
+    args = {
+        "value":    str(value),
+        "is_symbol":  str(is_symbol),
+        "size":       str(size),
+        "argsize":    str(argsize),
+        "trace_flag": str(trace_flag),
+        "bytes":      str(data),
+        "target_i":   str(target_i),
+        "shift":      str(shift),
+        "protection": str(protection),
+        "submode":    str(submode),
+    }
+
     script = session.create_script("""
-    var value = "%s";
-    var is_symbol = %s;
-    var size = %s;
-    var argsize = %s;
-    var trace_flag = %s;
-    var bytes = %s;
-    var target_i = "%s";
+    var value = "%(value)s";
+    var is_symbol = %(is_symbol)s;
+    var size = %(size)s;
+    var argsize = %(argsize)s;
+    var trace_flag = %(trace_flag)s;
+    var bytes = %(bytes)s;
+    var target_i = "%(target_i)s";
 
-    if (is_symbol) {
-        var symbol = value;
-        send("[*] Symbol '" + symbol + "' resolving...");
-        var symbols = DebugSymbol.findFunctionsNamed(symbol);
-        for (var i = 0; i < symbols.length; i++) {
-            send(symbols[i]);
-        }
-        if (""+symbols=="") {
-            var addr = false;
-        } else {
-            var addr = ptr(symbols[0]);
-        }
-    } else {
-        var addr = ptr(value);
-    }
-
-    if (bytes) {
-        bytes.push(0);
-        var pointer = new Memory.alloc(bytes.length)
-        send("[^] Allocate " + bytes.length + " bytes at " + pointer);
-        Memory.writeByteArray(pointer, bytes);
-        readMemory(pointer, size);
-    }
-
-    var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
+    var shift = %(shift)s;
+    var prot = "%(protection)s";
+    var submode = "%(submode)s";
 
     function regById(i) {
         var reg;
@@ -622,18 +616,6 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
         return payload;
     }
 
-    function checkMemory(addr, ranges) {
-        for (var j = 0; j < ranges.length; j++) {
-            var min = ranges[j].base
-            var x   = addr;
-            var max = ranges[j].base.add(ranges[j].size);
-            if (min <= x <= max) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     function argRead(args, i) {
         var payload;
         if (args[i].toInt32() != 0) {
@@ -642,7 +624,7 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
         return payload;
     }
 
-    function main() {
+    function main(addr) {
         if (is_symbol) {
             var d = DebugSymbol.fromAddress(addr);
             var s = d.moduleName + "!" + d.name;
@@ -661,12 +643,12 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
                     args[target_i] = pointer;
                 }
 
+                var d = DebugSymbol.fromAddress(addr);
+                var s = d.moduleName + "!" + d.name;
                 if (is_symbol) {
-                    var d = DebugSymbol.fromAddress(addr);
-                    var s = d.moduleName + "!" + d.name;
                     lines.push("[+] Hit at " + addr + " <" + value + ">" + " (" + s + ")");
                 } else {
-                    lines.push("[+] Hit at " + addr);
+                    lines.push("[+] Hit at " + addr + " (" + s + ")");
                 }
 
                 var d = DebugSymbol.fromAddress(this.returnAddress);
@@ -715,219 +697,16 @@ def intercept(session, addr, is_symbol, size, argsize, trace_flag=False, data=No
                     }
                 }
 
-                send({"subtype": "lines", "lines": lines});
-                for (var i = 0; i < messages.length; i++) {
-                    send(messages[i]);
-                }
-            }, 
-            onLeave: function(retval) {
-                /*send("[+] Ret val " + ptr(retval));*/
-                send(""); send("");
-            },
-
-            onError: function(reason) {
-                send('[!] Error');
-            }, 
-            onComplete: function() {
-                send("[*] Done");
-            }
-        });
-    }
-
-    if (addr) {
-        main();
-    } else {
-        send("[-] Symbol not found");
-    }
-    """ % (str(addr), str(is_symbol), str(size), str(argsize), str(trace_flag), str(data), str(target_i)) )
-    return script
-
-def intercept_by_pattern(session, pattern, size, argsize, trace_flag=False, data=None, target_i=None, shift=0, protection="r--"):
-    if not trace_flag:
-        trace_flag = "false"
-    else:
-        trace_flag = "true"
-    if not data:
-        data = "false"
-    if target_i == None:
-        target_i = "empty"
-
-    args = {
-        "pattern":    str(pattern), 
-        "size":       str(size),
-        "argsize":    str(argsize),
-        "trace_flag": str(trace_flag),
-        "bytes":      str(data),
-        "target_i":   str(target_i),
-        "shift":      str(shift),
-        "protection": str(protection),
-    }
-
-    script = session.create_script("""
-    var pattern = "%(pattern)s";
-    var size = %(size)s;
-    var argsize = %(argsize)s;
-    var trace_flag = %(trace_flag)s;
-    var bytes = %(bytes)s;
-    var target_i = "%(target_i)s";
-
-    var shift = %(shift)s;
-    var prot = "%(protection)s";
-    send("[*] Searching... " + pattern);
-    var ranges = Process.enumerateRangesSync({protection: prot, coalesce: true});
-    var range;
-
-    if (bytes) {
-        bytes.push(0);
-        var pointer = new Memory.alloc(bytes.length)
-        send("[^] Allocate " + bytes.length + " bytes at " + pointer);
-        Memory.writeByteArray(pointer, bytes);
-        readMemory(pointer, size);
-    }
-
-    var ranges = Process.enumerateRangesSync({protection: 'r--', coalesce: true});
-
-    function regById(i) {
-        var reg;
-        if (Process.arch == "ia32") {
-            reg = "ESP+" + 4*(i+1);
-        } else if (Process.arch == "x64") {
-            if (i == 0) {
-                reg = "RDI";
-            } else if (i == 1) {
-                reg = "RSI";
-            } else if (i == 2) {
-                reg = "RDX";
-            } else if (i == 3) {
-                reg = "RCX";
-            } else if (i == 4) {
-                reg = "R8";
-            } else if (i == 5) {
-                reg = "R9";
-            } else {
-                reg = "RSP+" + 8*(i-5);
-            }
-        } else {
-            reg = "";
-        }
-        return reg;
-    }
-
-    function readMemory(addr, size) {
-        try {
-            var dump = Memory.readByteArray(addr, size);
-        } catch(err) {
-            var payload = {
-                "subtype": "error",
-                "errtype": err["type"],
-                "addr":    err["address"],
-                "context": err["context"],
-                "dct":     err,
-                "output":  "" + err
-            };
-            return payload;
-        }
-        var array = new Uint8Array(dump);
-        var output = "";
-        for (var i = 0; i < size; i++) {
-            var byte = (array[i].toString(16));
-            if (byte.length == 1) {
-                byte = "0" + byte;
-            }
-            output += byte + " ";
-        }
-        var payload = {
-            "subtype": "hexstream",
-            "addr": addr.toString(),
-            "output": output
-        };
-        return payload;
-    }
-
-    function checkMemory(addr, ranges) {
-        for (var j = 0; j < ranges.length; j++) {
-            var min = ranges[j].base
-            var x   = addr;
-            var max = ranges[j].base.add(ranges[j].size);
-            if (min <= x <= max) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function argRead(args, i) {
-        var payload;
-        if (args[i].toInt32() != 0) {
-            payload = readMemory(args[i], size);
-        }
-        return payload;
-    }
-
-    function main(addr) {
-        send("[*] Intercepting at " + addr);
-
-        Interceptor.attach(addr, {
-            onEnter: function(args) {
-                var lines = [];
-                lines.push("");
-                var messages = [];
-
-                if (bytes) {
-                    args[target_i] = pointer;
-                }
-
-                lines.push("[+] Hit at " + addr);
-
-                var d = DebugSymbol.fromAddress(this.returnAddress);
-                var s = d.moduleName + "!" + d.name;
-
-                var dbg_bool = "" + Process.isDebuggerAttached();
-
-                /*lines.push("|    context: "   + this.context);*/
-                lines.push("|    ret_addr: "  + this.returnAddress + " (" + s + ")");
-                lines.push("|    thread_id: " + this.threadId);
-                lines.push("|    depth: "     + this.depth);
-                lines.push("|    err: "       + this.err);
-                lines.push("|    dbg: "       + dbg_bool);
-
-                if (trace_flag) {
-                    lines.push("|    backtrace:");
-                    var backtrace = Thread.backtrace(this.context, Backtracer.ACCURATE);
-                    for (var i = 0; i < backtrace.length; i++) {
-                        var d = DebugSymbol.fromAddress(backtrace[i]);
-                        var s = d.address + " (" + d.moduleName + "!" + d.name + ")";
-                        lines.push("|        " + s);
-                    }
-                }
-
-                var reg;
-                if (target_i == -1) {
-                    for (var i = 0; i < argsize; i++) {
-                        reg = regById(i);
-                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
-                    }
-                } else if (target_i != "empty") {
-                    reg = regById(target_i);
-                    messages.push("arg[" + target_i + "]" + " (" + reg + "): " + args[target_i]);
-                    var payload = argRead(args, target_i);
-                    if (payload) {
-                        messages.push(payload);
-                    }
-                } else {
-                    for (var i = 0; i < argsize; i++) {
-                        reg = regById(i);
-                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
-                        var payload = argRead(args, i);
-                        if (payload) {
-                            messages.push(payload);
-                        }
-                    }
+                var args_copy = {};
+                for (var i = 0; i < argsize; i++) {
+                    args_copy[i] = args[i];
                 }
 
                 send({"subtype": "lines", "lines": lines});
                 for (var i = 0; i < messages.length; i++) {
-                    send(messages[i]);
+                    var payload = messages[i];
+                    payload["args"] = args_copy;
+                    send(payload);
                 }
             }, 
             onLeave: function(retval) {
@@ -950,7 +729,7 @@ def intercept_by_pattern(session, pattern, size, argsize, trace_flag=False, data
             send("[*] Switching to next task");
             return;
         }
-        Memory.scan(range.base, range.size, pattern, {
+        Memory.scan(range.base, range.size, value, {
             onMatch: function(address, size) {
                 var moduleInfo = DebugSymbol.fromAddress(address);
                 var info = moduleInfo.moduleName + "!" + moduleInfo.name;
@@ -965,13 +744,111 @@ def intercept_by_pattern(session, pattern, size, argsize, trace_flag=False, data
             }
         });
     }
-    processNext();
+
+    if (bytes) {
+        bytes.push(0);
+        var pointer = new Memory.alloc(bytes.length)
+        send("[^] Allocate " + bytes.length + " bytes at " + pointer);
+        Memory.writeByteArray(pointer, bytes);
+        readMemory(pointer, size);
+    }
+
+    if (submode == "std") {
+        if (is_symbol) {
+            var symbol = value;
+            send("[*] Symbol '" + symbol + "' resolving...");
+            var symbols = DebugSymbol.findFunctionsNamed(symbol);
+            for (var i = 0; i < symbols.length; i++) {
+                send(symbols[i]);
+            }
+            if (""+symbols=="") {
+                var addr = false;
+            } else {
+                var addr = ptr(symbols[0]);
+            }
+        } else {
+            var addr = ptr(value);
+        }
+        if (""+addr == "false") {
+            send("[-] Resolving error");
+        } else {
+            main(addr);
+        }
+    } else if (submode == "pattern") {
+        send("[*] Searching... " + value);
+        var ranges = Process.enumerateRangesSync({protection: prot, coalesce: true});
+        var range;
+        processNext();
+    } else {
+        send("[-] Submode not found... ");
+    }
     """ % (args) )
     return script
 
+def stalker(session):
+    script = session.create_script("""
+    function main() {
+        var thread_ids = [];
+        Process.enumerateThreads({
+            onMatch: function (thread) {
+                thread_ids.push(thread.id);
+            },
+            onComplete: function () {
+                stalker(thread_ids);
+            }
+        });
+    }
 
-def convert(data, addr=0):
-    global output_format, bits
+    function stalker(thread_id) {
+        send("Thread ID: " + thread_id.toString());
+        Stalker.follow(thread_id, {
+            events: {
+                call: false,
+                ret:  false,
+                exec: false
+            },
+
+            onReceive: function (events) {
+                send("onReceive called.");
+            },
+
+            onCallSummary: function (summary) {
+                send("onCallSummary called.");
+            }
+        });
+    }
+    
+    function stalkers(thread_ids) {
+        thread_ids.forEach(function (thread_id) {
+            stalker(thread_id);
+        });
+    }
+
+    stalker(Process.getCurrentThreadId());
+    """ )
+    return script
+
+def threads(session):
+    script = session.create_script("""
+    function enum_threads() {
+        send("[*] Enumerating threads...")
+        Process.enumerateThreads({
+            onMatch: function (thread) {
+                send("[+] thread_id: " + thread.id.toString());
+            },
+            onComplete: function () {
+                send("[*] Done");
+            }
+        });
+    }
+
+    enum_threads();
+    """ )
+    return script
+
+
+def convert(data, addr=0, args=None):
+    global output_format, bits, directory
     if output_format == "hexdump":
         output = bytes_to_meta(data, addr)
     elif output_format == "hex":
@@ -984,6 +861,12 @@ def convert(data, addr=0):
         output = data.split(b"\x00")[0].decode()
     elif output_format in ["asm","mnemonic","mnemonic"]:
         output = dis(any_to_bytes(data), bits, show=2, offset=addr)
+    elif output_format in ["PR_Write"]:
+        output = ""
+        for key, value in args.items():
+            if value == hex(addr) and key == "1":
+                length = int(args["2"], 16)
+                output = data[:length]
     else:
         output = data
     return output
@@ -1000,9 +883,12 @@ def message_processing(message):
                 subtype = payload["subtype"]
                 if   subtype == "hexstream":
                     addr = 0
+                    args = None
                     if "addr" in payload:
                         addr = int(payload["addr"], 16)
-                    output = convert(hexstring_to_bytes(payload["output"]), addr)
+                    if "args" in payload:
+                        args = payload["args"]
+                    output = convert(hexstring_to_bytes(payload["output"]), addr, args)
                 elif subtype == "exports":
                     filter = payload["filter"].lower()
                     if filter == "" or filter in payload["name"].lower():
@@ -1053,10 +939,11 @@ def on_detached(session, message):
 
 
 def main(args):
-    global output_format, bits, nolines
+    global output_format, bits, nolines, directory
     output_format = args.output_format
     bits = args.bits
     nolines = args.nolines
+    directory = args.directory
     if args.host:
         host, port = args.host.split(":")
         session = attach_remote(args.pid, host, int(port))
@@ -1197,16 +1084,6 @@ def main(args):
         script.on('message', on_message)
         script.load()
 
-    elif args.mode == "intercept_without_pattern":
-        if not (args.payload):
-            parser.print_help()
-            exit()
-        if args.extra:
-            args.extra = list(any_to_bytes(args.extra))
-        script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i)
-        script.on('message', on_message)
-        script.load()
-
     elif args.mode in ["intercept"]:
         if not (args.payload):
             parser.print_help()
@@ -1215,7 +1092,7 @@ def main(args):
             args.extra = list(any_to_bytes(args.extra))
         if args.input_format == "pattern":
             pattern = any_to_hexstring(args.payload)
-            script = intercept_by_pattern(session, pattern, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection)
+            script = intercept(session, pattern, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection, submode="pattern")
         elif args.input_format in ["asm", "mnemo", "mnemonic"]:
             pattern = any_to_bytes(args.payload)
             if ascii_check(pattern):
@@ -1226,9 +1103,19 @@ def main(args):
                     pattern = any_to_hexstring(args.payload)
             else:
                 pattern = args.payload
-            script = intercept_by_pattern(session, pattern, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection)
+            script = intercept(session, pattern, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i, args.shift, args.protection, submode="pattern")
         else:
             script = intercept(session, args.payload, is_symbol, args.size, args.argsize, args.trace, args.extra, args.target_i)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode in ["stalker"]:
+        script = stalker(session)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode in ["thread", "threads"]:
+        script = threads(session)
         script.on('message', on_message)
         script.load()
 
@@ -1242,7 +1129,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '2.7'
+    version = '2.9'
 
     colors = ['','']
     if platform[0:3] == 'lin':
@@ -1292,6 +1179,8 @@ if __name__ == "__main__":
     parser.add_argument("-N",'--nolines', dest='nolines', action='store_true', help="no additional lines")
     parser.add_argument("-j",'--javascript', dest='javascript', type=str, default=None, help="js file")
     parser.add_argument("-t",'--protection', dest='protection', type=str, default="r--", help="protection flags")
+    #parser.add_argument("-C",'--context', dest='context', action='store_true', help="context flag")
+    parser.add_argument("-D",'--directory', dest='directory', type=str, default="temp", help="directory for files")
 
     args = parser.parse_args()
 
