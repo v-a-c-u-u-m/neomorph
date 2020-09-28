@@ -29,7 +29,7 @@ SSL interception
 
 Remote host SSL interception (package)
 ```sh
-./neomorph.py -H 192.168.1.9:2313 -P org.mozilla.firefox -m intercept -e SSL_write -A 1 -s 1024
+./neomorph.py -H 192.168.1.9:2313 -P org.mozilla.firefox -m intercept -e SSL_write -A 1 -s 10240 -O term
 ```
 
 
