@@ -808,7 +808,9 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
             onLeave: function(retval) {
                 /*send("[+] Ret val " + ptr(retval));*/
                 send(""); send("");
-                Stalker.unfollow();
+                if (trace_flag) {
+                    Stalker.unfollow();
+                }
             },
 
             onError: function(reason) {
@@ -1274,6 +1276,8 @@ if __name__ == "__main__":
 ./neomorph.py -p 1337 -m exports -e libssl.so -x read
 ./neomorph.py -p 31337 -m modules
 ./neomorph.py -p 31337 -m libinject -e libcustom.so -x my_function
+./neomorph.py -H 192.168.1.9:2313 -P org.mozilla.firefox -m dump -e __dl_dlopen -O asm -R arm64
+./neomorph.py -H 192.168.1.9:2313 -P org.mozilla.firefox -m intercept -e SSL_write -A 1 -s 1024
 '''
 
     parser = ArgumentParser(description=banner,
@@ -1308,7 +1312,6 @@ if __name__ == "__main__":
     try:
         from capstone import *
         from keystone import *
-        global arch
         arch = args.arch
     except:
         print("[!] Can't import libs")
