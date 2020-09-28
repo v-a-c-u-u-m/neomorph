@@ -463,10 +463,10 @@ def lib_inject(session, libpath, symbol):
         }
         return 0;
     }
-    var dlopen_addr = searchSymbols(["dlopen_test", "__dl_dlopen"], "dlopen");
+    var dlopen_addr = searchSymbols(["dlopen", "__dl_dlopen"], "dlopen");
     send(dlopen_addr);
     if (dlopen_addr) {
-        var dlsym_addr = searchSymbols(["dlsym_test", "__dl_dlsym"], "dlsym");
+        var dlsym_addr = searchSymbols(["dlsym", "__dl_dlsym"], "dlsym");
         if (dlsym_addr) {
             var libpath_pointer = Memory.allocUtf8String(libpath);
             var symbol_pointer = Memory.allocUtf8String(symbol);
@@ -1179,7 +1179,11 @@ def main(args):
             symbol = args.extra
         else:
             symbol = "main"
-        script = lib_inject(session, realpath(args.payload), symbol)
+        if (args.host or args.package):
+            libpath = args.payload
+        else:
+            libpath = realpath(args.payload)
+        script = lib_inject(session, libpath, symbol)
         script.on('message', on_message)
         script.load()
 
