@@ -27,6 +27,11 @@ SSL interception
 ./neomorph.py -p 31337 -m intercept -e SSL_read
 ```
 
+Remote host SSL interception (package)
+```sh
+./neomorph.py -H 192.168.1.9:2313 -P org.mozilla.firefox -m intercept -e SSL_write -A 1 -s 1024
+```
+
 
 
 ## Spoofing example
