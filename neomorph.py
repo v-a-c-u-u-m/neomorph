@@ -16,6 +16,7 @@ bits = 32
 nolines = False
 directory = "temp"
 i = 0
+arch = None
 
 
 def hexstring_to_bytes(hexstring):
@@ -153,10 +154,13 @@ def asm(code, bits, mode, show=0):
     return encoding
 
 def dis(code, bits, show=0, offset=0):
-    if bits == 32:
-        md = Cs(CS_ARCH_X86, KS_MODE_32)
+    if arch == "arm64":
+        md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
     else:
-        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        if bits == 32:
+            md = Cs(CS_ARCH_X86, CS_MODE_32)
+        else:
+            md = Cs(CS_ARCH_X86, CS_MODE_64)
     if type(code) == type(''):
         code = code.encode()
     s = ''
@@ -182,6 +186,12 @@ def attach_remote(pid, ip, port):
     dm = get_device_manager()
     device = dm.add_remote_device(ip + ":" + str(port))
     session = device.attach(pid)
+    return session
+
+def attach_remote_package(package, ip, port):
+    dm = get_device_manager()
+    device = dm.add_remote_device(ip + ":" + str(port))
+    session = device.attach(package)
     return session
 
 def attach_usb(package):
@@ -450,7 +460,7 @@ def lib_inject(session, libpath, symbol):
     var libpath = "%(libpath)s";
     var symbol = "%(symbol)s";
 
-    function searchSymbols(symbols_list, name) {
+    function searchSymbols(symbols_list) {
         for (var i = 0; i < symbols_list.length; i++) {
             var symbols = DebugSymbol.findFunctionsNamed(symbols_list[i]);
             for (var j = 0; j < symbols.length; j++) {
@@ -463,17 +473,20 @@ def lib_inject(session, libpath, symbol):
         }
         return 0;
     }
-    var dlopen_addr = searchSymbols(["dlopen", "__dl_dlopen"], "dlopen");
+    var dlopen_addr = searchSymbols(["dlopen", "__dl_dlopen"]);
     send(dlopen_addr);
     if (dlopen_addr) {
-        var dlsym_addr = searchSymbols(["dlsym", "__dl_dlsym"], "dlsym");
+        var dlsym_addr = searchSymbols(["dlsym", "__dl_dlsym"]);
         if (dlsym_addr) {
             var libpath_pointer = Memory.allocUtf8String(libpath);
             var symbol_pointer = Memory.allocUtf8String(symbol);
+            send("[*] Library - " + libpath + ", symbol - " + symbol);
             var dlopen = new NativeFunction(dlopen_addr, 'pointer', ['pointer', 'uint64']);
             var dlsym  = new NativeFunction(dlsym_addr,  'pointer', ['pointer', 'pointer']);
             var handle = dlopen(libpath_pointer, 1);
-            var entry_addr = ptr(dlsym(handle, symbol_pointer));
+            send("[~] Result dlopen: " + handle);
+            var entry_addr = dlsym(handle, symbol_pointer);
+            send("[~] Result dlsym:  " + entry_addr);
             if (entry_addr != "0x0") {
                 var entry  = new NativeFunction(entry_addr, 'int', []);
                 entry();
@@ -932,7 +945,7 @@ def threads(session):
 
 
 def convert(data, addr=0, args=None):
-    global output_format, bits, directory
+    global output_format, bits, directory, arch
     if output_format == "hexdump":
         output = bytes_to_meta(data, addr)
     elif output_format == "hex":
@@ -1031,7 +1044,10 @@ def main(args):
     bits = args.bits
     nolines = args.nolines
     directory = args.directory
-    if args.host:
+    if args.host and args.package:
+        host, port = args.host.split(":")
+        session = attach_remote_package(args.package, host, int(port))
+    elif args.host:
         host, port = args.host.split(":")
         session = attach_remote(args.pid, host, int(port))
     elif args.package:
@@ -1285,12 +1301,15 @@ if __name__ == "__main__":
     parser.add_argument("-t",'--protection', dest='protection', type=str, default="r--", help="protection flags")
     #parser.add_argument("-C",'--context', dest='context', action='store_true', help="context flag")
     parser.add_argument("-D",'--directory', dest='directory', type=str, default="temp", help="directory for files")
+    parser.add_argument("-R",'--arch', dest='arch', type=str, default=None, help="arm64")
 
     args = parser.parse_args()
 
     try:
         from capstone import *
         from keystone import *
+        global arch
+        arch = args.arch
     except:
         print("[!] Can't import libs")
 
