@@ -3,7 +3,7 @@
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from time import sleep
-from os.path import join, realpath
+from os.path import join, realpath, exists
 from sys import argv, platform, stdin, exit
 from frida import attach, get_device_manager, get_usb_device
 from binascii import unhexlify
@@ -455,6 +455,79 @@ def call(session, addr):
     """ % (str(addr)) )
     return script
 
+def pointers_activity(session, base, shift, size):
+    base = int(base, 16)
+    times = 10;
+
+    script = session.create_script("""
+        var base = ptr(%(base)s);
+        var shift = "%(shift)s";
+        var size = %(size)s;
+        var times = %(times)s;
+        var modules = Process.enumerateModulesSync();
+        var bytecount = 8;
+
+        function readPointers(base, bytecount, size) {
+            send("[*] Reading from address: " + base);
+            var dump = Memory.readByteArray(base, size);
+            var array = new Uint8Array(dump);
+            var addr = ptr(0);
+            var output = "";
+            var k = 0;
+            var i, j, a, b, start, finish;
+            var lst = [];
+
+            for (i = 0; i < size - bytecount + 1; i++) {
+                addr = ptr(0);
+                for (j = 0; j < bytecount; j++) {
+                    k = array[j+i];
+                    addr = addr.add(k * 256**j);
+                }
+                if (addr != "0x0") {
+                    for (j = 0; j < modules.length; j++) {
+                        start = modules[j]["base"];
+                        finish = start.add(modules[j]["size"]);
+                        var a = new UInt64(start.toString());
+                        var b = new UInt64(finish.toString());
+                        var c = new UInt64(addr.toString());
+                        if (c >= a && c <= b) {
+                            lst.push([base.add(i), addr]);
+                        }
+                    }
+                }
+            }
+            return lst;
+        }
+
+        function lstComparsion(lst1, lst2, n) {
+            var found = 0;
+            var lst = [];
+            for (var j = 0; j < lst2.length; j++) {
+                for (var i = 0; i < lst1.length; i++) {
+                    if (lst1[i][1] == lst2[j][1]) {
+                        lst1.splice(i, 1);
+                        lst2.splice(j, 1);
+                        break;
+                    }
+                }
+            }
+            lst = lst.push.apply(lst1, lst2);
+            return lst;
+        }
+
+        var lst = readPointers(base.add(shift), bytecount, size);
+
+        for (var i = 0; i < lst.length; i++) {
+            var moduleInfo = DebugSymbol.fromAddress(lst[i][1]);
+            var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+            send("[" + (i+1) + "] " + lst[i][0] + ": " + lst[i][1] + " (" + info + ")" );
+        }
+        send("[*] Total count is " + lst.length);
+        send("[*] Done");
+        
+    """ % {"base": base, "shift": shift, "size": size, "times": times} )
+    return script
+
 def lib_inject(session, libpath, symbol):
     script = session.create_script("""
     var libpath = "%(libpath)s";
@@ -700,6 +773,7 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
             },
 
             onCallSummary: function (summary) {
+                send("");
                 send("onCallSummary:");
                 var payload = {
                     "subtype": "raw",
@@ -956,6 +1030,8 @@ def convert(data, addr=0, args=None):
         output = bytes_to_ascii(data)
     elif output_format == "term":
         output = data.split(b"\x00")[0]
+    elif output_format == "http":
+        output = data.split(b"\x00")[0]
     elif output_format in ["str", "string"]:
         output = data.split(b"\x00")[0].decode()
     elif output_format in ["asm","mnemonic","mnemonic"]:
@@ -1186,6 +1262,11 @@ def main(args):
             parser.print_help()
             exit()
         script = resolve_symbols_by_name(session, args.payload)
+        script.on('message', on_message)
+        script.load()
+
+    elif args.mode in ["stack", "pointers"]:
+        script = pointers_activity(session, args.payload, args.shift, args.size)
         script.on('message', on_message)
         script.load()
 
