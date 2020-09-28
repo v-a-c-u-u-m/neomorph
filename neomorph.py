@@ -3,7 +3,7 @@
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from time import sleep
-from os.path import join
+from os.path import join, realpath
 from sys import argv, platform, stdin, exit
 from frida import attach, get_device_manager, get_usb_device
 from binascii import unhexlify
@@ -445,6 +445,50 @@ def call(session, addr):
     """ % (str(addr)) )
     return script
 
+def lib_inject(session, libpath, symbol):
+    script = session.create_script("""
+    var libpath = "%(libpath)s";
+    var symbol = "%(symbol)s";
+
+    function searchSymbols(symbols_list, name) {
+        for (var i = 0; i < symbols_list.length; i++) {
+            var symbols = DebugSymbol.findFunctionsNamed(symbols_list[i]);
+            for (var j = 0; j < symbols.length; j++) {
+                send("[*] Symbol '" + symbols[j] + "' searching...");
+                var moduleInfo = DebugSymbol.fromAddress(symbols[j]);
+                var info = moduleInfo.moduleName + "!" + moduleInfo.name;
+                send(symbols[j] + "  (" + info + ")");
+                return ptr(symbols[j]);
+            }
+        }
+        return 0;
+    }
+    var dlopen_addr = searchSymbols(["dlopen_test", "__dl_dlopen"], "dlopen");
+    send(dlopen_addr);
+    if (dlopen_addr) {
+        var dlsym_addr = searchSymbols(["dlsym_test", "__dl_dlsym"], "dlsym");
+        if (dlsym_addr) {
+            var libpath_pointer = Memory.allocUtf8String(libpath);
+            var symbol_pointer = Memory.allocUtf8String(symbol);
+            var dlopen = new NativeFunction(dlopen_addr, 'pointer', ['pointer', 'uint64']);
+            var dlsym  = new NativeFunction(dlsym_addr,  'pointer', ['pointer', 'pointer']);
+            var handle = dlopen(libpath_pointer, 1);
+            var entry_addr = ptr(dlsym(handle, symbol_pointer));
+            if (entry_addr != "0x0") {
+                var entry  = new NativeFunction(entry_addr, 'int', []);
+                entry();
+                send("[+] Executed at " + entry_addr + " (" + symbol + ")" + " - " + libpath);
+            } else {
+                send("[!] Error");
+            }
+        }
+    }
+
+    send("[*] Done");
+    """ % {"libpath": libpath, "symbol": symbol} )
+    return script
+
+
 def spoof(session, addr, is_symbol, data, length):
     length = len(data) if len(data) % 16 == 0 else len(data) + (16 - (len(data) % 16))
     #length = len(data) + (16 - (len(data) % 16))
@@ -534,7 +578,7 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
         target_i = "empty"
 
     args = {
-        "value":    str(value),
+        "value":      str(value),
         "is_symbol":  str(is_symbol),
         "size":       str(size),
         "argsize":    str(argsize),
@@ -624,6 +668,63 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
         return payload;
     }
 
+    function stalker(thread_id) {
+        send("Thread ID: " + thread_id.toString());
+        Stalker.follow(thread_id, {
+            events: {
+                call: true,
+                ret:  true,
+                exec: false
+            },
+
+            onReceive: function (events) {
+                send("onReceive:");
+                var payload = {
+                    "subtype": "raw",
+                    "output": JSON.stringify(Stalker.parse(events))
+                };
+                send(payload);
+            },
+
+            onCallSummary: function (summary) {
+                send("onCallSummary:");
+                var payload = {
+                    "subtype": "raw",
+                    "output": summary
+                };
+                send(payload);
+            }
+        });
+    }
+
+    function reg_info(args) {
+        var reg;
+        var messages = [];
+        if (target_i == -1) {
+            for (var i = 0; i < argsize; i++) {
+                reg = regById(i);
+                messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+            }
+        } else if (target_i != "empty") {
+            reg = regById(target_i);
+            messages.push("arg[" + target_i + "]" + " (" + reg + "): " + args[target_i]);
+            var payload = argRead(args, target_i);
+            if (payload) {
+                messages.push(payload);
+            }
+        } else {
+            for (var i = 0; i < argsize; i++) {
+                reg = regById(i);
+                messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
+                var payload = argRead(args, i);
+                if (payload) {
+                    messages.push(payload);
+                }
+            }
+        }
+        return messages;
+    }
+
     function main(addr) {
         if (is_symbol) {
             var d = DebugSymbol.fromAddress(addr);
@@ -637,7 +738,6 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
             onEnter: function(args) {
                 var lines = [];
                 lines.push("");
-                var messages = [];
 
                 if (bytes) {
                     args[target_i] = pointer;
@@ -673,29 +773,11 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
                     }
                 }
 
-                var reg;
-                if (target_i == -1) {
-                    for (var i = 0; i < argsize; i++) {
-                        reg = regById(i);
-                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
-                    }
-                } else if (target_i != "empty") {
-                    reg = regById(target_i);
-                    messages.push("arg[" + target_i + "]" + " (" + reg + "): " + args[target_i]);
-                    var payload = argRead(args, target_i);
-                    if (payload) {
-                        messages.push(payload);
-                    }
-                } else {
-                    for (var i = 0; i < argsize; i++) {
-                        reg = regById(i);
-                        messages.push("arg[" + i + "]" + " (" + reg + "): " + args[i]);
-                        var payload = argRead(args, i);
-                        if (payload) {
-                            messages.push(payload);
-                        }
-                    }
+                if (trace_flag) {
+                    stalker(this.threadId);
                 }
+
+                var messages = reg_info(args);
 
                 var args_copy = {};
                 for (var i = 0; i < argsize; i++) {
@@ -708,10 +790,12 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
                     payload["args"] = args_copy;
                     send(payload);
                 }
+
             }, 
             onLeave: function(retval) {
                 /*send("[+] Ret val " + ptr(retval));*/
                 send(""); send("");
+                Stalker.unfollow();
             },
 
             onError: function(reason) {
@@ -803,9 +887,9 @@ def stalker(session):
         send("Thread ID: " + thread_id.toString());
         Stalker.follow(thread_id, {
             events: {
-                call: false,
-                ret:  false,
-                exec: false
+                call: true,
+                ret:  true,
+                exec: true
             },
 
             onReceive: function (events) {
@@ -914,7 +998,10 @@ def message_processing(message):
                         output = None
                 elif subtype == "error":
                     output = payload["output"]
+                else:
+                    output = payload["output"]
     else:
+        #message = repr(message) #?
         output = message
     return output
 
@@ -1084,6 +1171,18 @@ def main(args):
         script.on('message', on_message)
         script.load()
 
+    elif args.mode == "inject":
+        if not (args.payload):
+            parser.print_help()
+            exit()
+        if args.extra:
+            symbol = args.extra
+        else:
+            symbol = "main"
+        script = lib_inject(session, realpath(args.payload), symbol)
+        script.on('message', on_message)
+        script.load()
+
     elif args.mode in ["intercept"]:
         if not (args.payload):
             parser.print_help()
@@ -1129,7 +1228,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    version = '2.9'
+    version = '3.0'
 
     colors = ['','']
     if platform[0:3] == 'lin':
@@ -1154,6 +1253,7 @@ if __name__ == "__main__":
 ./neomorph.py -p 1337 -m exports -e libssl.so
 ./neomorph.py -p 1337 -m exports -e libssl.so -x read
 ./neomorph.py -p 31337 -m modules
+./neomorph.py -p 31337 -m libinject -e libcustom.so -x my_function
 '''
 
     parser = ArgumentParser(description=banner,
