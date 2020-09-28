@@ -7,6 +7,14 @@ pip3 install frida-tools
 
 
 
+## Library injection example
+Custom library injection
+```sh
+./neomorph.py -p 31337 -m inject -e libcustom.so -x entry_function
+````
+
+
+
 ## Interception example
 Function interception
 ```sh
