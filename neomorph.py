@@ -764,22 +764,41 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
             },
 
             onReceive: function (events) {
+                send("");
                 send("onReceive:");
-                var payload = {
-                    "subtype": "raw",
-                    "output": JSON.stringify(Stalker.parse(events))
-                };
-                send(payload);
+                var array = Stalker.parse(events);
+                var limit = 200;
+                for (var i = 0; i < array.length; i++) {
+                    if (i >= limit) {
+                        break;
+                    }
+                    var d1 = DebugSymbol.fromAddress(array[i][1]);
+                    var d2 = DebugSymbol.fromAddress(array[i][2]);
+                    var a1 = "" + array[i][1] + " (" + d1.moduleName + "!" + d1.name + ")";
+                    var a2 = "" + array[i][2] + " (" + d2.moduleName + "!" + d2.name + ")";
+                    var output = "[" + (i+1) + "] " + array[i][0] + ", " + a1 + ", " + a2 + ", " + array[i][3];
+                    send(output);
+                }
             },
 
             onCallSummary: function (summary) {
                 send("");
-                send("onCallSummary:");
-                var payload = {
-                    "subtype": "raw",
-                    "output": summary
-                };
-                send(payload);
+                send("onCallSummary: " + summary.toString() + " !");
+                var limit = 200;
+                var acc = 0;
+                for (key in summary) {
+                    if (summary.hasOwnProperty(key)) {
+                        if (acc >= limit) {
+                            break;
+                        }
+                        var p = ptr(key.toString(16));
+                        var d = DebugSymbol.fromAddress(p);
+                        var a = "" + key + " (" + d.moduleName + "!" + d.name + ")";
+                        var value = summary[key];
+                        send("" + a + " ~ " + value);
+                        acc += 1;
+                    }
+                }
             }
         });
     }
