@@ -783,7 +783,6 @@ def intercept(session, value, is_symbol, size, argsize, trace_flag=False, data=N
 
             onCallSummary: function (summary) {
                 send("");
-                send("onCallSummary: " + summary.toString() + " !");
                 var limit = 200;
                 var acc = 0;
                 for (key in summary) {
